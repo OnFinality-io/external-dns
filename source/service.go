@@ -59,6 +59,7 @@ type serviceSource struct {
 	ignoreHostnameAnnotation       bool
 	publishInternal                bool
 	publishHostIP                  bool
+	publishNodeExternalIP          bool
 	alwaysPublishNotReadyAddresses bool
 	serviceInformer                coreinformers.ServiceInformer
 	endpointsInformer              coreinformers.EndpointsInformer
@@ -68,7 +69,7 @@ type serviceSource struct {
 }
 
 // NewServiceSource creates a new serviceSource with the given config.
-func NewServiceSource(kubeClient kubernetes.Interface, namespace, annotationFilter string, fqdnTemplate string, combineFqdnAnnotation bool, compatibility string, publishInternal bool, publishHostIP bool, alwaysPublishNotReadyAddresses bool, serviceTypeFilter []string, ignoreHostnameAnnotation bool) (Source, error) {
+func NewServiceSource(kubeClient kubernetes.Interface, namespace, annotationFilter string, fqdnTemplate string, combineFqdnAnnotation bool, compatibility string, publishInternal bool, publishHostIP bool, publishNodeExternalIP bool, alwaysPublishNotReadyAddresses bool, serviceTypeFilter []string, ignoreHostnameAnnotation bool) (Source, error) {
 	var (
 		tmpl *template.Template
 		err  error
@@ -147,6 +148,7 @@ func NewServiceSource(kubeClient kubernetes.Interface, namespace, annotationFilt
 		ignoreHostnameAnnotation:       ignoreHostnameAnnotation,
 		publishInternal:                publishInternal,
 		publishHostIP:                  publishHostIP,
+		publishNodeExternalIP:          publishNodeExternalIP,
 		alwaysPublishNotReadyAddresses: alwaysPublishNotReadyAddresses,
 		serviceInformer:                serviceInformer,
 		endpointsInformer:              endpointsInformer,
@@ -275,12 +277,34 @@ func (sc *serviceSource) extractHeadlessEndpoints(svc *v1.Service, hostname stri
 			if pod.Spec.Hostname != "" {
 				headlessDomains = append(headlessDomains, fmt.Sprintf("%s.%s", pod.Spec.Hostname, hostname))
 			}
+			var externalIP string
+			if sc.publishNodeExternalIP {
+				node, err := sc.nodeInformer.Lister().Get(pod.Spec.NodeName)
+				if err != nil {
+					log.Debugf("Unable to find node where Pod %s is running", pod.Spec.Hostname)
+				} else {
+					for _, address := range node.Status.Addresses {
+						switch address.Type {
+						case v1.NodeExternalIP:
+							externalIP = address.Address
+						}
+					}
+				}
+
+			}
 
 			for _, headlessDomain := range headlessDomains {
 				var ep string
 				if sc.publishHostIP {
 					ep = pod.Status.HostIP
-					log.Debugf("Generating matching endpoint %s with HostIP %s", headlessDomain, ep)
+					log.Infof("Generating matching endpoint %s with HostIP %s", headlessDomain, ep)
+				} else if sc.publishNodeExternalIP {
+					if len(externalIP) > 0 {
+						ep = externalIP
+					} else {
+						ep = pod.Status.HostIP
+					}
+					log.Infof("Generating matching endpoint %s with ExternalIP %s", headlessDomain, ep)
 				} else {
 					ep = address.IP
 					log.Debugf("Generating matching endpoint %s with EndpointAddress IP %s", headlessDomain, ep)
